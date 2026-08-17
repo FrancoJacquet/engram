@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"log"
 	"os"
 	"sort"
 	"strconv"
@@ -140,11 +141,14 @@ func (s *Store) semanticCandidates(queryVector []float32, model string, opts Sea
 func (s *Store) semanticBranches(query string, opts SearchOptions) ([]rankedBranch, bool) {
 	cmd := os.Getenv("ENGRAM_EMBEDDER")
 	if cmd == "" {
-		return nil, false
+		return nil, false // branch off by configuration, not a failure: stay quiet
 	}
 
+	// From here on the user asked for semantic search, so a failure is worth
+	// reporting: it degrades results silently otherwise.
 	e, err := s.sharedEmbedder(cmd)
 	if err != nil {
+		log.Printf("[engram] semantic search off: %v", err)
 		return nil, false
 	}
 
@@ -153,17 +157,29 @@ func (s *Store) semanticBranches(query string, opts SearchOptions) ([]rankedBran
 
 	res, err := e.Embed(ctx, []embed.Request{{ID: "q", Kind: embed.KindQuery, Text: query}})
 	if err != nil {
+		log.Printf("[engram] semantic search off: embedding the query failed: %v", err)
 		return nil, false
 	}
 
 	floor := similarityFloor()
 	var branches []rankedBranch
 	for _, r := range res {
-		if r.Err != nil || len(r.Vector) == 0 {
+		if r.Err != nil {
+			log.Printf("[engram] semantic branch %q skipped: %v", r.Model, r.Err)
+			continue
+		}
+		if len(r.Vector) == 0 {
+			log.Printf("[engram] semantic branch %q skipped: empty vector", r.Model)
 			continue
 		}
 		b, err := s.semanticCandidates(r.Vector, r.Model, opts, floor)
-		if err != nil || len(b.ids) == 0 {
+		if err != nil {
+			log.Printf("[engram] semantic branch %q skipped: %v", r.Model, err)
+			continue
+		}
+		if len(b.ids) == 0 {
+			log.Printf("[engram] semantic branch %q: no candidates above the %.2f floor "+
+				"(are the vectors backfilled for this model?)", r.Model, floor)
 			continue
 		}
 		branches = append(branches, b)
