@@ -1092,6 +1092,23 @@ func (s *Store) migrate() error {
 		return err
 	}
 
+	// ── Phase: semantic-search — additive vector table ──────────────────────
+	// N vectors per observation (one per embedding model). The three legacy
+	// embedding* columns on observations stay untouched: they belong to the
+	// conflict-surfacing reservation and are not re-purposed here.
+	if _, err := s.execHook(s.db, `
+		CREATE TABLE IF NOT EXISTS observation_embeddings (
+			observation_id INTEGER NOT NULL,
+			model          TEXT    NOT NULL,
+			embedding      BLOB    NOT NULL,
+			created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (observation_id, model)
+		);
+		CREATE INDEX IF NOT EXISTS idx_obs_emb_model ON observation_embeddings(model);
+	`); err != nil {
+		return err
+	}
+
 	return nil
 }
 
