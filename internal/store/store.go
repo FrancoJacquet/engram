@@ -19,8 +19,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/Gentleman-Programming/engram/internal/embed"
 	"github.com/Gentleman-Programming/engram/internal/timeutil"
 	sqlite "modernc.org/sqlite"
 )
@@ -489,6 +491,11 @@ type Store struct {
 	db    *sql.DB
 	cfg   Config
 	hooks storeHooks
+
+	// Semantic search: one embedder process per store, started lazily on the
+	// first search that needs it so the models load once per session.
+	embMu sync.Mutex
+	emb   embed.Embedder
 }
 
 type execer interface {
@@ -2404,6 +2411,9 @@ func (s *Store) AddObservation(p AddObservationParams) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Best-effort and non-blocking: a missing or broken embedder leaves the
+	// observation without vectors for the next backfill to pick up.
+	s.embedAsync(observationID, title, content)
 	return observationID, nil
 }
 
@@ -3244,6 +3254,49 @@ func (s *Store) Search(query string, opts SearchOptions) ([]SearchResult, error)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+
+	// ── Semantic branch (optional) ──────────────────────────────────────────
+	// Runs only with ENGRAM_EMBEDDER configured. Any failure falls back to the
+	// keyword-only results without altering historical behaviour.
+	if branches, ok := s.semanticBranches(query, opts); ok {
+		keyword := rankedBranch{score: make(map[int64]float64, len(results))}
+		byID := make(map[int64]SearchResult, len(results))
+		for _, r := range results {
+			keyword.ids = append(keyword.ids, r.ID)
+			// bm25 rank: more negative is better, and direct topic_key hits
+			// are pinned at -1000. Negate so "bigger is better" holds for
+			// tie-breaking against cosine scores.
+			keyword.score[r.ID] = -r.Rank
+			byID[r.ID] = r
+		}
+
+		fused := fuseMinRank(append([]rankedBranch{keyword}, branches...))
+
+		missing := make([]int64, 0)
+		for _, id := range fused {
+			if _, ok := byID[id]; !ok {
+				missing = append(missing, id)
+			}
+		}
+		if len(missing) > 0 {
+			if extra, err := s.observationsByIDs(missing); err == nil {
+				for _, o := range extra {
+					byID[o.ID] = SearchResult{Observation: o}
+				}
+			}
+		}
+
+		merged := make([]SearchResult, 0, limit)
+		for _, id := range fused {
+			if r, ok := byID[id]; ok {
+				merged = append(merged, r)
+				if len(merged) >= limit {
+					break
+				}
+			}
+		}
+		results = merged
 	}
 
 	if len(results) > limit {
