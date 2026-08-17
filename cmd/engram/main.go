@@ -646,6 +646,8 @@ func main() {
 		cmdContext(cfg)
 	case "stats":
 		cmdStats(cfg)
+	case "embed":
+		cmdEmbed(cfg)
 	case "export":
 		cmdExport(cfg)
 	case "import":
@@ -2672,6 +2674,10 @@ Commands:
   doctor             Run read-only operational diagnostics [--json] [--project P] [--check CODE]
   context [project]  Show recent context from previous sessions
   stats              Show memory system statistics
+  embed --backfill [--batch N]
+                     Embed observations that are missing vectors, using the
+                     command in ENGRAM_EMBEDDER (semantic search is off
+                     without it)
   export [file]      Export all memories to JSON (default: engram-export.json)
   import <file>      Import memories from a JSON export file
   projects list      List all projects with observation, session, and prompt counts
